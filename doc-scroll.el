@@ -209,7 +209,7 @@ TEXT is the text that is used as a placeholder for the overlay."
 	 data)
 
     (unless async
-      (setq data (funcall #'doc-djvu-page-data page (car size))))
+      (setq data (funcall doc-scroll-image-data-function page (car size))))
 
     (if async
 	(doc-djvu-page-data page (car size) t)
@@ -311,6 +311,7 @@ TEXT is the text that is used as a placeholder for the overlay."
     "o" 'imenu-list-smart-toggle)))
 
 
+;;;###autoload
 (define-derived-mode doc-scroll-mode special-mode "DocScroll"
   (dolist (m doc-scroll-incompatible-modes)
     (funcall m -1))
@@ -318,6 +319,8 @@ TEXT is the text that is used as a placeholder for the overlay."
   ;; (setq-local doc-scroll-internal-page-sizes (doc-djvu-page-sizes)
   ;;             doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes))
   (pcase (file-name-extension buffer-file-name)
+    ("pdf" (doc-mupdf-mode))
+    ;; ("pdf" (doc-poppler-mode))
     ("djvu" (doc-djvu-mode)))
 
   (add-hook 'window-configuration-change-hook 'doc-scroll-redisplay nil t)
@@ -344,7 +347,8 @@ TEXT is the text that is used as a placeholder for the overlay."
   )
 
 ;; (setq magic-mode-alist (remove '("%PDF" . pdf-view-mode) magic-mode-alist))
-(add-to-list 'auto-mode-alist '("\\.djvu\\'" . doc-scroll-mode))
+(dolist (ext '("\\.pdf\\'" "\\.djvu\\'"))
+  (add-to-list 'auto-mode-alist (cons ext 'doc-scroll-mode)))
 
 (defun doc-scroll-vscroll-to-pscroll (&optional vscroll)
   "Scroll in units of page size."
