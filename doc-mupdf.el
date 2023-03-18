@@ -7,7 +7,8 @@
 
   (setq-local doc-scroll-number-of-pages (doc-mupdf-number-of-pages)
               doc-scroll-internal-page-sizes (doc-mupdf-page-sizes)
-	      doc-scroll-image-data-function #'doc-mupdf-get-image-data))
+	      doc-scroll-image-data-function #'doc-mupdf-get-image-data
+	      doc-scroll-async nil))
               ;; doc-scroll-internal-page-sizes (doc-mupdf-page-sizes)
               ;; doc-scroll-last-page (length doc-scroll-internal-page-sizes)
               ;; doc-scroll-structured-contents (doc-poppler-structured-contents nil nil t)

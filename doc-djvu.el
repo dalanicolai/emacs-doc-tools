@@ -13,7 +13,9 @@
   (setq-local doc-scroll-internal-page-sizes (doc-djvu-page-sizes)
               doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes)
 
-              doc-scroll-image-data-function #'doc-djvu-page-data))
+              doc-scroll-image-data-function #'doc-djvu-page-data
+	      doc-scroll-async nil
+	      doc-scroll-svg-embed nil))
               ;; doc-scroll-contents (doc-djvu-parse-raw-contents)
               ;; ;; doc-scroll-contents-function #'doc-djvu-parse-raw-contents
               ;; ;; doc-scroll-structured-contents (doc-djvu-structured-text 'char)
@@ -222,6 +224,7 @@ prefixed with the universal argument, undoes the inversion."
 				page width 5000 file))))
 	    (set-process-sentinel proc (lambda (p e)
 					 (let ((data (with-current-buffer (process-buffer proc)
+						       (set-buffer-multibyte nil)
 						       (prog1
 							   (buffer-string)
 							 (kill-buffer)))))
@@ -232,6 +235,7 @@ prefixed with the universal argument, undoes the inversion."
 		 page width 5000 file)
 	 nil "ddjvu")
 	(with-current-buffer "ddjvu"
+	  (set-buffer-multibyte nil)
 	  (prog1 (buffer-string)
 	    (kill-buffer))))))
 

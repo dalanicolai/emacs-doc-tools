@@ -43,7 +43,11 @@
 (defvar doc-scroll-incompatible-modes '(visual-line-mode
                                         global-hl-line-mode))
 
+(defvar-local doc-scroll-async nil)
+(defvar-local doc-scroll-svg-embed t)
 (defvar-local doc-scroll-step-size 80)
+
+(defvar-local doc-scroll-drag-action 'select)
 
 (defmacro doc-scroll-overlays (&optional winprops)
   "List of overlays that make up a scroll.
@@ -67,6 +71,10 @@ Setf-able (macro)."
 
 (defun doc-scroll-current-overlay-height ()
   (cdr (overlay-get (doc-scroll-current-overlay) 'size)))
+
+(defun doc-scroll-internal-page-size (page)
+  (nth (1- page) doc-scroll-internal-page-sizes))
+
 
 (defun doc-scroll-create-overlays (number
                                    &optional columns hspace vspace text
@@ -171,7 +179,7 @@ TEXT is the text that is used as a placeholder for the overlay."
       ;; errors)
       ;; (redisplay)
       (dolist (o (doc-scroll-visible-overlays))
-        (doc-scroll-display-page o nil t)))))
+        (doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
 
 (defun doc-scroll-overlay-base-width (columns hspace)
   (let ((win-width (- (nth 2 (window-inside-pixel-edges))
@@ -200,7 +208,7 @@ TEXT is the text that is used as a placeholder for the overlay."
     (overlay-put overlay 'display `(space . (:width (,(car size)) :height (,(cdr size)))))))
 
 (defun doc-scroll-display-page (overlay &optional async svg)
-  ;; (ldbg "EPC")
+  (ldbg "EPC")
   (let* ((page (if (numberp overlay)
 		   (prog1 overlay
 		     (setq overlay (doc-scroll-page-overlay overlay)))
@@ -212,8 +220,10 @@ TEXT is the text that is used as a placeholder for the overlay."
       (setq data (funcall doc-scroll-image-data-function page (car size))))
 
     (if async
-	(doc-djvu-page-data page (car size) t)
-      (doc-scroll-display-image overlay data t))))
+	(if doc-pymupdf-mode
+	    (doc-pymupdf-epc-display-image-async page (car size))
+	  (doc-djvu-page-data page (car size) t))
+      (doc-scroll-display-image overlay data svg doc-pymupdf-mode))))
     ;; 	 (data (funcall (if async #'epc:call-deferred #'epc:call-sync)
     ;; 			doc-pymupdf-epc-server
     ;; 			'renderpage_base64
@@ -232,15 +242,17 @@ TEXT is the text that is used as a placeholder for the overlay."
     ;; 		    (deferred:nextc it display))
     ;;   (funcall display data))))
 
-(defun doc-scroll-display-image (overlay data &optional svg)
+(defun doc-scroll-display-image (overlay data &optional svg base64)
   (when svg
     (setq data (let* ((size (overlay-get overlay 'size))
 		      (svg (svg-create (car size) (cdr size))))
-		 (svg-embed svg data "image/png" t)
+		 (if base64
+		     (doc-svg-embed-base64 svg data "image/png")
+		 (svg-embed svg data "image/png" t))
 		 ;; (svg-rectangle svg 0 0 200 200 :fill "red")
 		 svg)))
 
-  (let* ((fn (if svg
+  (let* ((fn (if (ldbg svg)
 		 (apply-partially #'svg-image data)
 	       (apply-partially #'create-image data 'png t)))
 	 (image (funcall fn :page (1+ (overlay-get overlay 'i)))))
@@ -265,6 +277,7 @@ TEXT is the text that is used as a placeholder for the overlay."
         (define-key map (kbd "S-<next>") 'doc-scroll-screen-forward)
         (define-key map (kbd "S-<prior>") 'doc-scroll-screen-backward)
         (define-key map [remap goto-line] 'doc-scroll-goto-page)
+        (define-key map "a" 'doc-scroll-cycle-drag-action)
         (define-key map "f" 'doc-scroll-fit-toggle)
         (define-key map "c" 'doc-scroll-set-columns)
         (define-key map "t" 'doc-scroll-thumbs)
@@ -319,7 +332,8 @@ TEXT is the text that is used as a placeholder for the overlay."
   ;; (setq-local doc-scroll-internal-page-sizes (doc-djvu-page-sizes)
   ;;             doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes))
   (pcase (file-name-extension buffer-file-name)
-    ("pdf" (doc-mupdf-mode))
+    ("pdf" (doc-pymupdf-mode))
+    ;; ("pdf" (doc-mupdf-mode))
     ;; ("pdf" (doc-poppler-mode))
     ("djvu" (doc-djvu-mode)))
 
@@ -387,8 +401,8 @@ TEXT is the text that is used as a placeholder for the overlay."
       ;;   (run-hooks 'doc-scroll-change-page-hook))
       (when (window-live-p window)
 	(let ((page-overlay (doc-scroll-page-overlay page)))
-          (doc-scroll-display-page page-overlay)
-          (doc-scroll-display-page (doc-scroll-page-overlay (1+ page))) ; TODO remove
+          (doc-scroll-display-page page-overlay doc-scroll-async doc-scroll-svg-embed)
+          (doc-scroll-display-page (doc-scroll-page-overlay (1+ page)) doc-scroll-async doc-scroll-svg-embed) ; TODO remove
           (goto-char (overlay-start page-overlay))))
       ;; (when changing-p
       ;;   (run-hooks 'doc-scroll-after-change-page-hook))
@@ -428,7 +442,7 @@ If N is nil, the value of `doc-scroll-step-size` is used."
       (dolist (o (seq-difference old-overlays new-overlays))
 	(doc-scroll-undisplay-page o))
       (dolist (o (seq-difference new-overlays old-overlays))
-	(doc-scroll-display-page o nil t)))))
+	(doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
       
 (defun doc-scroll--backward (&optional n row)
   (let ((old-vscroll (window-vscroll nil t))
@@ -456,7 +470,7 @@ If N is nil, the value of `doc-scroll-step-size` is used."
       (dolist (o (seq-difference old-overlays new-overlays))
 	(doc-scroll-undisplay-page o))
       (dolist (o (seq-difference new-overlays old-overlays))
-	(doc-scroll-display-page o nil t)))))
+	(doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
       
 (defun doc-scroll-forward (n)
   (interactive "p")
@@ -481,6 +495,91 @@ If N is nil, the value of `doc-scroll-step-size` is used."
   (interactive "p")
   (doc-scroll--backward n t))
 
+;;; Coords
+(defun doc-scroll-coords-point-scale (page coords)
+  "Scale mouse click position to internal page coords.
+PAGE and COORDS should be provided as number and cons repectively."
+  (pcase-let ((`(,iw . ,ih) (doc-scroll-internal-page-size page))
+              (`(,w . ,h) (doc-scroll-overlay-size page)))
+    (cons (* (/ (float iw) w) (car coords))
+          (* (/ (float ih) h) (cdr coords)))))
+
+(defun doc-scroll-coords-scale-to-internal (coords size internal-size)
+  (pcase-let* ((`(,x1 ,y1 ,x2 ,y2) coords)
+	       (`(,w . ,h) size)
+	       (`(,wi . ,hi) internal-size)
+	       (h-scale (/ (float wi) w))
+	       (v-scale (/ (float hi) h)))
+    (list (* h-scale x1) (* v-scale y1) (* h-scale x2) (* v-scale y2))))
+
+;;; Mouse
+(defun doc-scroll-cycle-drag-action ()
+  (interactive)
+  (let ((annot-types '(select highlight underline strikeout squiggly line)))
+    (setq doc-scroll-drag-action
+	  (print (or (cadr (member doc-scroll-drag-action annot-types))
+		     (car annot-types))))))
+
+
+(defun doc-scroll-mouse-drag-action (event &optional type)
+  "Draw objects interactively via a mouse drag EVENT. "
+  (interactive "@e")
+  (setq type (or type doc-scroll-drag-action))
+  (pcase-let* ((start (event-start event))
+	       (start-pos (posn-object-x-y start))
+	       (`(,x1 . ,y1) start-pos)
+               (page (image-property (posn-image start) :page))
+	       (overlay (doc-scroll-page-overlay page))
+	       (start-point (doc-scroll-coords-point-scale page (posn-object-x-y start)))
+	       (end-point nil)
+	       (x2 nil)
+	       (y2 nil))
+    (track-mouse
+      (while (not (memq (car event) '(drag-mouse-1 S-drag-mouse-1)))
+        (setq event (read-event))
+        (pcase-let* ((end (event-end event))
+		     (end-pos (posn-object-x-y end)))
+	  (setq x2 (car end-pos)
+		y2 (cdr end-pos))
+	  ;; (ldbg (doc-scroll-coords-point-scale page (posn-object-x-y end)))
+	  ;; (ldbg (cons x2 y2)))))))
+	  (setq end-point (doc-scroll-coords-point-scale page (posn-object-x-y end)))
+	    (doc-scroll-svg-draw overlay type x1 y1 x2 y2))))
+    ;; (print (doc-scroll-coords-points-to-words overlay x1 y1 x2 y2)))))
+    (if (eq doc-scroll-drag-action 'select)
+	(doc-scroll-svg-draw overlay type x1 y1 x2 y2)
+      (doc-scroll-add-annot page
+			    (doc-scroll-coords-scale-to-internal (list x1 y1 x2 y2)
+								 (doc-scroll-overlay-size page)
+								 (doc-scroll-internal-page-size page))
+			    (or type doc-scroll-drag-action) t)
+      (set-buffer-modified-p t))))
+
+(defun doc-scroll-svg-draw (overlay type x1 y1 x2 y2 &rest args)
+  (let ((page (1+ (overlay-get overlay 'i)))
+	(svg (copy-sequence (ldbg (overlay-get overlay 'data)))))
+    (if (eq type 'line)
+	(svg-line svg x1 y1 x2 y2 :stroke-color "blue")
+      ;; (let ((rects (mapcar (lambda (w) (seq-take w 4))
+      ;; 			   (doc-scroll-coords-points-to-words page x1 y1 x2 y2))))
+	;; (dolist (r rects)
+	(dolist (r (list (list x1 y1 x2 y2)))
+	  (pcase-let ((`(,x1 ,y1 ,x2 ,y2) r))
+	    (svg-rectangle svg x1 y1 (- x2 x1) (- y2 y1)
+			   :fill (pcase type
+				   ('highlight "yellow")
+				   ('underline "lawngreen")
+				   ('strikeout "red")
+				   ('squiggly "deeppink")
+				   (_ "gray"))
+			   :opacity 0.5))))
+    (overlay-put overlay 'display (svg-image svg :page page))))
+
+(defun doc-scroll-add-annot (page edges style &optional display)
+  (let* ((o (doc-scroll-page-overlay page))
+	 (base64-data (doc-pymupdf-epc-add-annot page edges style display (car (overlay-get o 'size)))))
+    ;; (base64-decode-string base64-data)))
+    (doc-scroll-display-image o base64-data t t)))
 
 (provide 'doc-scroll)
 ;;; doc-scroll.el ends here
