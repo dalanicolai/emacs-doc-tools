@@ -1,5 +1,6 @@
 ;; -*- lexical-binding: t; -*-
 
+;;;###autoload
 (define-minor-mode doc-poppler-mode
   "Poppler backend for Doc Scroll."
   ;; (doc-djvu-decode-pages doc-scroll-overlay-width)

@@ -63,6 +63,7 @@ otherwise.  IMAGE-TYPE should be a MIME image type, like
 (defun doc-pymupdf-kill-server ()
   (epc:stop-epc doc-pymupdf-epc-server))
 
+;;;###autoload
 (define-minor-mode doc-pymupdf-mode
   "Minor mode for activating the DocScroll PyMuPDF backend."
   :lighter " PyMuPDF"
@@ -223,13 +224,14 @@ otherwise.  IMAGE-TYPE should be a MIME image type, like
   (interactive "nEnter page number: ")
   (epc:call-sync doc-pymupdf-epc-server 'renderpage_base64 (list page width)))
 
-(defun doc-pymupdf-epc-display-image-async (page width)
+(defun doc-pymupdf-epc-display-image-async (page width &optional window)
   (interactive "nEnter page number: ")
   (deferred:$ (epc:call-deferred doc-pymupdf-epc-server 'renderpage_base64 (list page width))
 	      (deferred:nextc it (lambda (x)
-				   (doc-scroll-display-image (doc-scroll-page-overlay page)
-							     ;; (base64-decode-string x)
-							     x t t)))))
+				   (with-selected-window (or window (selected-window))
+				     (doc-scroll-display-image (doc-scroll-page-overlay page)
+							       ;; (base64-decode-string x)
+							       x t t))))))
 
 (defun doc-pymupdf-epc-page-image-file (page width path)
   (interactive "nEnter page number: ")

@@ -1,5 +1,6 @@
 ;; -*- lexical-binding: t; -*-
 
+;;;###autoload
 (define-minor-mode doc-mupdf-mode
   "MuPDF backend for Doc-Scroll."
   :lighter " MuPDF"

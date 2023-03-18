@@ -6,6 +6,7 @@
 (defvar doc-doc nil
   "Doc file associated with buffer.")
 
+;;;###autoload
 (define-minor-mode doc-djvu-mode "Doc-DJVU"
   ;; (doc-djvu-decode-pages doc-scroll-overlay-width)
   :lighter " DJVU"

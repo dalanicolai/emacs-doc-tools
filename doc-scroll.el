@@ -208,7 +208,6 @@ TEXT is the text that is used as a placeholder for the overlay."
     (overlay-put overlay 'display `(space . (:width (,(car size)) :height (,(cdr size)))))))
 
 (defun doc-scroll-display-page (overlay &optional async svg)
-  (ldbg "EPC")
   (let* ((page (if (numberp overlay)
 		   (prog1 overlay
 		     (setq overlay (doc-scroll-page-overlay overlay)))
@@ -221,7 +220,7 @@ TEXT is the text that is used as a placeholder for the overlay."
 
     (if async
 	(if doc-pymupdf-mode
-	    (doc-pymupdf-epc-display-image-async page (car size))
+	    (doc-pymupdf-epc-display-image-async page (car size) (selected-window))
 	  (doc-djvu-page-data page (car size) t))
       (doc-scroll-display-image overlay data svg doc-pymupdf-mode))))
     ;; 	 (data (funcall (if async #'epc:call-deferred #'epc:call-sync)
@@ -252,7 +251,7 @@ TEXT is the text that is used as a placeholder for the overlay."
 		 ;; (svg-rectangle svg 0 0 200 200 :fill "red")
 		 svg)))
 
-  (let* ((fn (if (ldbg svg)
+  (let* ((fn (if svg
 		 (apply-partially #'svg-image data)
 	       (apply-partially #'create-image data 'png t)))
 	 (image (funcall fn :page (1+ (overlay-get overlay 'i)))))
@@ -361,6 +360,7 @@ TEXT is the text that is used as a placeholder for the overlay."
   )
 
 ;; (setq magic-mode-alist (remove '("%PDF" . pdf-view-mode) magic-mode-alist))
+;;;###autoload
 (dolist (ext '("\\.pdf\\'" "\\.djvu\\'"))
   (add-to-list 'auto-mode-alist (cons ext 'doc-scroll-mode)))
 
@@ -557,7 +557,7 @@ PAGE and COORDS should be provided as number and cons repectively."
 
 (defun doc-scroll-svg-draw (overlay type x1 y1 x2 y2 &rest args)
   (let ((page (1+ (overlay-get overlay 'i)))
-	(svg (copy-sequence (ldbg (overlay-get overlay 'data)))))
+	(svg (copy-sequence (overlay-get overlay 'data))))
     (if (eq type 'line)
 	(svg-line svg x1 y1 x2 y2 :stroke-color "blue")
       ;; (let ((rects (mapcar (lambda (w) (seq-take w 4))
@@ -580,6 +580,130 @@ PAGE and COORDS should be provided as number and cons repectively."
 	 (base64-data (doc-pymupdf-epc-add-annot page edges style display (car (overlay-get o 'size)))))
     ;; (base64-decode-string base64-data)))
     (doc-scroll-display-image o base64-data t t)))
+
+;;; thumbnails
+(defcustom doc-scroll-thumbs-width 200
+  "Width of thumbnails in pixels.
+In order to limit memory usage, the maximum width is 'hard-coded'
+to 400."
+  :type 'integer
+  :group 'doc-scroll-thumbs)
+
+(defcustom doc-scroll-thumbs-side 'left
+  "Create thumbs window at this side.
+Side should be a symbol left or right (default)."
+  :type 'symbol
+  :group 'doc-scroll-thumbs)
+
+(defcustom doc-scroll-thumbs-show-page-numbers nil
+  "Maximum number of PNG images per buffer."
+  :type 'boolean
+  :group 'doc-scroll-thumbs)
+
+(defcustom doc-scroll-thumbs-show-page-after nil
+  "Maximum number of PNG images per buffer."
+  :type 'boolean
+  :group 'doc-scroll-thumbs)
+
+(defcustom doc-scroll-thumbs-mouse-face nil
+  "Maximum number of PNG images per buffer."
+  :type 'boolean
+  :group 'doc-scroll-thumbs)
+
+(defcustom doc-scroll-thumbs-mouse-face-color "blue"
+  "Maximum number of PNG images per buffer."
+  :type 'color
+  :group 'doc-scroll-thumbs)
+
+(defun doc-scroll-thumbs (&optional columns)
+  "Show thumbs in a side window.
+The number of COLUMNS can be set with a numeric prefix argument."
+  (interactive "p")
+  (let* ((buffer-name "*thumbs*")
+         (buf (get-buffer buffer-name))
+         (file (buffer-file-name))
+         (output-dir (concat "/tmp/doc-tools/"
+                             (file-name-as-directory (file-name-base file))
+                             "thumbs/"))
+         (last-page doc-scroll-number-of-pages)
+         (win (selected-window))
+         (mode major-mode))
+    (or (and buf
+             (buffer-local-value 'doc-scroll-thumbs-columns buf)
+             (= (buffer-local-value 'doc-scroll-thumbs-columns buf) columns))
+
+        (with-current-buffer (get-buffer-create buffer-name)
+          (unless (file-exists-p output-dir)
+            (funcall (pcase mode
+                       ('doc-backend-djvu-mode #'doc-djvu-decode-thumbs)
+                       (_ #'doc-mupdf-create-thumbs))
+                     file))
+          (doc-scroll-thumbs-mode)
+          (setq doc-scroll-thumbs-columns columns)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (let* ((columns (or columns 1))
+                   (w 150)
+                   (h (* w 1.6))
+                   (source-svg (svg-create w h)))
+              (svg-rectangle source-svg 0 0 w h :fill "white")
+              (dotimes (i last-page)
+                (let* ((p (1+ i))
+                       (svg (copy-sequence source-svg))
+                       (im (create-image (concat output-dir
+                                                 (format "thumb%d." p)
+                                                 (pcase mode
+                                                   ('doc-backend-djvu-mode "tif")
+                                                   (_ "png")))
+                                         (pcase mode
+                                           ('doc-backend-djvu-mode 'tiff)
+                                           (_ 'png))
+                                         nil
+                                         :margin '(2 . 1))))
+                  (apply #'insert-button (format "%03d " p)
+                         (append (list 'page (number-to-string p)
+                                       'win win
+                                       'face 'default
+                                       'display im
+                                       'action (lambda (b)
+                                                 (with-selected-window (button-get b 'win)
+                                                   (doc-scroll-goto-page
+                                                    (string-to-number (button-get b 'page))
+                                                    (button-get b 'win)))))
+                                 (if doc-scroll-thumbs-show-page-numbers
+                                     (list (if doc-scroll-thumbs-show-page-after
+                                               'after-string
+                                             'before-string)
+                                           (format "%4d " p)) ;either this or help-echo
+                                   (list 'help-echo (number-to-string p)))
+                                 (when doc-scroll-thumbs-mouse-face
+                                   (list 'mouse-face (list :background doc-scroll-thumbs-mouse-face-color))))))
+                (when (= (% i columns) (1- columns)) (insert "\n")))
+              (goto-char (point-min))
+
+              (setq-local mode-line-format
+                          `(" P" (:eval (button-get (button-at (point)) 'page))
+                            ;; Avoid errors during redisplay.
+                            "/" ,(number-to-string last-page)))
+              ;; (unless doc-scroll-thumbs-show-page-numbers
+              ;;   (add-hook 'post-command-hook #'display-local-help nil t))
+              ))))
+
+    (doc-scroll-thumbs-show columns)))
+
+(defun doc-scroll-thumbs-show (columns)
+  (let ((win (split-window nil
+                           (- (+ (* columns (float (+ doc-scroll-thumbs-width 4 (if doc-scroll-thumbs-show-page-numbers 41 0))))
+                                 (- (window-pixel-width)
+                                    (window-body-width nil t))))
+                           doc-scroll-thumbs-side t)))
+    (set-window-buffer win "*thumbs*")
+    (set-window-dedicated-p win t)
+    (select-window win)))
+
+
+(define-derived-mode doc-scroll-thumbs-mode special-mode "DS-Thumbs")
+
 
 (provide 'doc-scroll)
 ;;; doc-scroll.el ends here
