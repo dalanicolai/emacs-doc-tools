@@ -192,16 +192,20 @@ TEXT is the text that is used as a placeholder for the overlay."
          (ratio (/ (float base-width) widest-page-w)))
     (floor (* ratio (apply #'max (mapcar #'cdr doc-scroll-internal-page-sizes))))))
 
-(defun doc-scroll-visible-overlays ()
+(defun doc-scroll-visible-overlays (&optional extra-row)
   (let* ((visible (overlays-in (window-start) (window-end nil t)))
-         (start (apply #'min (mapcar (lambda (o) (overlay-get o 'i)) visible)))
-         (end (apply #'max (mapcar (lambda (o) (overlay-get o 'i)) visible)))
+         (start (ldbg "s" (apply #'min (mapcar (lambda (o) (overlay-get o 'i)) visible))))
+         (end (ldbg "e" (apply #'max (mapcar (lambda (o) (overlay-get o 'i)) visible))))
          ;; include previous/next rows for 'smoother' displaying
-         (new-start (max (- start (image-mode-window-get 'columns)) 0))
-         (new-end (min (+ end (image-mode-window-get 'columns)) (1- doc-scroll-number-of-pages))))
+         (new-start (max (- start (* (image-mode-window-get 'columns)
+				     (if (eq extra-row 'before) 2 1)))
+			 0))
+         (new-end (min (+ end (* (image-mode-window-get 'columns)
+				 (if (eq extra-row 'after) 2 1)))
+		       (1- doc-scroll-number-of-pages))))
          ;; start and end should be limited to index start/end page
     ;; (seq-subseq overlays (max new-start 0) (1+ (min new-end (length overlays))))))
-    (seq-subseq (image-mode-window-get 'overlays) new-start (1+ new-end))))
+    (seq-subseq (image-mode-window-get 'overlays) new-start new-end)))
 
 (defun doc-scroll-undisplay-page (overlay)
   (let ((size (overlay-get overlay 'size)))
@@ -412,65 +416,88 @@ TEXT is the text that is used as a placeholder for the overlay."
       ;;   (run-hooks 'pdf-view-after-change-page-hook))))
       nil)))
 
+(defun doc-scroll-vscroll-to-pscroll (vscroll)
+  "Scroll in units of page size."
+  (/ (float vscroll)
+     ;; (cdr (doc-scroll-overlay-size (or (doc-scroll-current-page) 1)))))
+     (cdr (doc-scroll-overlay-size (doc-scroll-current-page)))))
+
+(defun doc-scroll-pscroll-to-vscroll (pscroll &optional page)
+  (* pscroll
+     (cdr (doc-scroll-overlay-size (if page
+                                       (cdr (doc-scroll-overlay-size page))
+                                     (doc-scroll-current-page))))))
+
+(defun doc-scroll-set-window-pscroll (vscroll)
+  "Set vscroll in units of current page height."
+  (let ((pscroll (doc-scroll-vscroll-to-pscroll vscroll)))
+    (setf (image-mode-window-get 'pscroll) pscroll)
+    (set-window-vscroll (selected-window) vscroll t)))
+
 (defun doc-scroll--forward (&optional n row)
   "Scroll forward N units.
 Default unit is pixels. If ROW is non-nil then unit is row, which
 is equivalent to page if the value of `doc-scroll-columns` is 1.
 If N is nil, the value of `doc-scroll-step-size` is used."
-  (let ((old-vscroll (window-vscroll nil t))
-	(old-overlays (doc-scroll-visible-overlays)))
+  (let* ((old-vscroll (window-vscroll nil t))
+	 (new-vscroll (+ old-vscroll (or n doc-scroll-step-size)))
+	 (current-overlay-height (doc-scroll-current-overlay-height)))
 
-    (if row
-	(let ((pscroll (doc-scroll-vscroll-to-pscroll)))
-	  (if (= (doc-scroll-current-page) (length (image-mode-window-get 'overlays)))
-	      (message "End of buffer")
-	    (forward-line n)
-	    (image-set-window-vscroll old-vscroll)))
+    (if (or row (> new-vscroll current-overlay-height))
+	(let ((old-overlays (ldbg "o" (doc-scroll-visible-overlays))))
+	  (forward-line)
+	  ;; (recenter 0) ; takes redisplay arg but does not work (also
+	  ;; 	       ; when `recenter-redisplay' is non-nil)
+	  (redisplay) ; so we add an extra redisplay
+	  (if row
+	      (doc-scroll-set-window-pscroll (doc-scroll-pscroll-to-vscroll (or (image-mode-window-get 'pscroll) 0)))
+	    (doc-scroll-set-window-pscroll (floor (- new-vscroll (ldbg  current-overlay-height)))))
+	  ;; (redisplay)
+	  (let ((new-overlays (ldbg "v" (doc-scroll-visible-overlays 'after))))
+	    (dolist (o (seq-difference old-overlays new-overlays))
+	      (doc-scroll-undisplay-page o))
+	    (dolist (o (seq-difference new-overlays old-overlays))
+	      (doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed))))
 
-      (let ((new-vscroll (+ old-vscroll (or n doc-scroll-step-size)))
-            (current-overlay-height (doc-scroll-current-overlay-height)))
-	(cond ((> new-vscroll current-overlay-height)
-	       (forward-line)
-               (set-window-vscroll nil (floor (- new-vscroll current-overlay-height)) t))
-              (t (if (and (= (doc-scroll-current-page) (length (image-mode-window-get 'overlays)))
-			  (> (+ new-vscroll (window-text-height nil t)) (doc-scroll-current-overlay-height)))
-                     (message "End of buffer")
-		   (image-set-window-vscroll new-vscroll))))))
-
-    (redisplay)
-    (let ((new-overlays (doc-scroll-visible-overlays)))
-      (dolist (o (seq-difference old-overlays new-overlays))
-	(doc-scroll-undisplay-page o))
-      (dolist (o (seq-difference new-overlays old-overlays))
-	(doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
-      
+      (if (and (= (doc-scroll-current-page) (length (image-mode-window-get 'overlays)))
+	       (> (+ new-vscroll (window-text-height nil t)) (doc-scroll-current-overlay-height)))
+          (message "End of buffer")
+	(doc-scroll-set-window-pscroll new-vscroll)))))
+	    
 (defun doc-scroll--backward (&optional n row)
-  (let ((old-vscroll (window-vscroll nil t))
-	(old-overlays (doc-scroll-visible-overlays)))
+  (let* ((old-vscroll (window-vscroll nil t))
+	 (new-vscroll (- old-vscroll (or n doc-scroll-step-size))))
 
-    (if row
-	(let ((pscroll (doc-scroll-vscroll-to-pscroll)))
+    (if (or row (< (ldbg  new-vscroll) 0))
+	(let ((old-overlays (doc-scroll-visible-overlays)))
 	  (if (= (doc-scroll-current-page) 1)
-              (progn (image-set-window-vscroll 0)
-		     (message "Beginning of buffer"))
-	    (forward-line (- (or n 1)))
-	    (image-set-window-vscroll old-vscroll)))
+              (message "Beginning of buffer")
+	    (forward-line -1)
+	    ;; TODO check if the following lines are required when page < win-height
+	    (recenter 0) ; takes redisplay are but does not work (also
+	    ;; 	       ; when `recenter-redisplay' is non-nil)
+	    (redisplay) ; so we add an extra redisplay
+	    (if row
+		(doc-scroll-set-window-pscroll old-vscroll)
+	      (doc-scroll-set-window-pscroll (floor (- (doc-scroll-current-overlay-height) old-vscroll))))
+	    (redisplay)
+	    (let ((new-overlays (doc-scroll-visible-overlays 'before)))
+	      (dolist (o (seq-difference old-overlays new-overlays))
+		(doc-scroll-undisplay-page o))
+	      (dolist (o (seq-difference new-overlays old-overlays))
+		(doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
 
-      (let ((new-vscroll (- old-vscroll (or n doc-scroll-step-size)))
-            (current-overlay-height (doc-scroll-current-overlay-height)))
-	(cond ((< new-vscroll 0)
-	       (if (= (doc-scroll-current-page) 1)
-                     (message "Beginning of buffer")
-		 (forward-line -1)
-		 (set-window-vscroll nil (floor (- current-overlay-height old-vscroll)) t)))
-              (t (image-set-window-vscroll new-vscroll)))))
+      (image-set-window-vscroll new-vscroll))))
 
-    (redisplay)
-    (let ((new-overlays (doc-scroll-visible-overlays)))
-      (dolist (o (seq-difference old-overlays new-overlays))
-	(doc-scroll-undisplay-page o))
-      (dolist (o (seq-difference new-overlays old-overlays))
-	(doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
+
+    ;; (if row
+    ;; 	(let ((old-overlays (doc-scroll-visible-overlays)))
+    ;; 	  (if (= (doc-scroll-current-page) 1)
+    ;;           (progn (image-set-window-vscroll 0)
+    ;; 		     (message "Beginning of buffer"))
+    ;; 	    (forward-line (- (or n 1)))
+    ;; 	    (image-set-window-vscroll old-vscroll)))
+
       
 (defun doc-scroll-forward (n)
   (interactive "p")
