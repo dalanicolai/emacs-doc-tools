@@ -27,7 +27,8 @@
 (require 'epc)
 (require 'svg)
 
-(defconst doc-pymupdf-dir (file-name-directory (or load-file-name buffer-file-name)))
+(defconst doc-pymupdf-dir
+  (file-name-directory (or load-file-name buffer-file-name)))
 
 (defcustom doc-pymupdf-epc-executable
   (expand-file-name "doc-pymupdf-epc-server.py" doc-pymupdf-dir)

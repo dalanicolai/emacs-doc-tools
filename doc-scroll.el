@@ -40,14 +40,26 @@
 ;;     `((xlink:href . ,(concat "data:" image-type ";base64," data))
 ;;       ,@(svg--arguments svg args)))))
 
+(defcustom doc-scroll-cache-file-image-width (save-window-excursion
+					       (delete-other-windows)
+					       (split-window-horizontally)
+					       (window-body-width nil t))
+  "The width of the cached images."
+  :type 'numberp
+  :group 'doc-scroll)
+
 (defvar doc-scroll-incompatible-modes '(visual-line-mode
                                         global-hl-line-mode))
 
+(defvar-local doc-scroll-doc-type nil)
 (defvar-local doc-scroll-async nil)
 (defvar-local doc-scroll-svg-embed t)
 (defvar-local doc-scroll-step-size 80)
+(defvar-local doc-scroll-line-length 120)
 
 (defvar-local doc-scroll-drag-action 'select)
+
+(defvar-local doc-pymupdf-mode nil)
 
 (defmacro doc-scroll-overlays (&optional winprops)
   "List of overlays that make up a scroll.
@@ -75,6 +87,12 @@ Setf-able (macro)."
 (defun doc-scroll-internal-page-size (page)
   (nth (1- page) doc-scroll-internal-page-sizes))
 
+(defun doc-scroll-columns (&optional winprops)
+  "Number of columns.
+Setf-able function."
+  (declare (gv-setter (lambda (val)
+                        `(image-mode-window-put 'columns ,val ,winprops))))
+  (image-mode-window-get 'columns winprops))
 
 (defun doc-scroll-create-overlays (number
                                    &optional columns hspace vspace text
@@ -133,13 +151,13 @@ TEXT is the text that is used as a placeholder for the overlay."
   ;; (ldbg  image-mode-winprops-alist)
   (if (not (overlays-at 1))
       (let ((inhibit-read-only t)
-            overlays) ; required because we derive mode (inherit) from
+            overlays) ; required because we derive type (inherit) from
                                         ; `special-mode'
 
         (erase-buffer)
         (setq overlays (doc-scroll-create-overlays doc-scroll-number-of-pages
                                                    nil nil nil
-                                                   (make-string 120 (string-to-char " "))
+                                                   (make-string doc-scroll-line-length (string-to-char " "))
                                                    'window (car winprops)))
         (image-mode-window-put 'overlays overlays)
         (image-mode-window-put 'columns 1))
@@ -164,33 +182,74 @@ TEXT is the text that is used as a placeholder for the overlay."
 
 (defun doc-scroll-redisplay (&optional force)
   ;; (ldbg "WINDOW CONFIGURATION CHANGE (redisplay)")
-  (when (or force
-            (/= (or (image-mode-window-get 'win-width) -1)
-                (window-pixel-width)))
-    (image-mode-window-put 'win-width (window-pixel-width))
+  ;; (when (or force
+  ;;           (/= (or (image-mode-window-get 'win-width) -1)
+  ;;               (window-pixel-width)))
+    ;; (image-mode-window-put 'win-width (window-pixel-width))
     (let* ((w (doc-scroll-overlay-base-width (image-mode-window-get 'columns) 0))
            (h (doc-scroll-overlay-base-height w))
            (overlays (image-mode-window-get 'overlays)))
       (dolist (o overlays)
         (overlay-put o 'display `(space . (:width (,w) :height (,h))))
+        (when (= (doc-scroll-columns) 1)
+          (overlay-put o 'before-string
+                       (when (> (window-body-width) w)
+                         (propertize " " 'display
+                                     `(space :align-to
+                                             (,(floor (/ (- (window-body-width) (car overlay-size)) 2))))))))
         (overlay-put o 'size (cons w h)))
       ;; NOTE this seems not required when a non-nil UPDATE argument is passes
       ;; to the `window-end' function (however, the outcommenting might lead
       ;; errors)
       ;; (redisplay)
-      (dolist (o (doc-scroll-visible-overlays))
-        (doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed)))))
+      (dolist (o (doc-scroll-visible-overlays 'after))
+        (doc-scroll-display-page o doc-scroll-async doc-scroll-svg-embed))))
 
 (defun doc-scroll-overlay-base-width (columns hspace)
-  (let ((win-width (- (nth 2 (window-inside-pixel-edges))
-                      (nth 0 (window-inside-pixel-edges)))))
-    (/ (- win-width (* (1- columns) (* hspace (frame-char-width))))
-       columns)))
+  ;; (let ((win-width (- (nth 2 (window-inside-pixel-edges))
+  ;;                     (nth 0 (window-inside-pixel-edges)))))
+  ;;   (/ (- win-width (* (1- columns) (* hspace (frame-char-width))))
+  ;;      columns)))
+  (if (= columns 1)
+      doc-scroll-cache-file-image-width
+    (/ (window-body-width nil t) columns)))
 
 (defun doc-scroll-overlay-base-height (base-width)
   (let* ((widest-page-w (apply #'max (mapcar #'car doc-scroll-internal-page-sizes)))
          (ratio (/ (float base-width) widest-page-w)))
     (floor (* ratio (apply #'max (mapcar #'cdr doc-scroll-internal-page-sizes))))))
+
+(defun doc-scroll-set-columns (columns)
+  (interactive "p")
+  (when (/= (% doc-scroll-line-length columns) 0)
+    (user-error
+     "The current 'scap-line-length' only supports %s number of
+columns"
+     (mapconcat #'number-to-string
+                (cl-loop for f from 1 to doc-scroll-line-length
+                         when (eq (% doc-scroll-line-length f) 0)
+                         collect f)
+                ",")))
+  (let* ((current-page (doc-scroll-current-page))
+         ;; (doc-scroll-overlay-sizes (doc-scroll-desired-page-sizes
+         ;;                    doc-scroll-internal-page-sizes nil columns
+         ;;                    doc-scroll-horizontal-margin doc-scroll-vertical-margin))
+	 (w (doc-scroll-overlay-base-width columns 0))
+         (h (doc-scroll-overlay-base-height w))
+         (overlays (image-mode-window-get 'overlays))
+	 (pos 1)
+	 (i 0))
+    (dolist (o (doc-scroll-overlays))
+      (let ((s (nth i overlays)))
+        (move-overlay o pos (setq pos (+ pos (/ doc-scroll-line-length columns))))
+        (overlay-put o 'size (cons w h))
+        (overlay-put o 'before-string nil)
+        (overlay-put o 'display `(space . (:width (,w) :height (,h))))
+	(when (eq (% i columns) (1- columns))
+          (setq pos (1+ pos)))
+	(setq i (1+ i))))
+    (setf (doc-scroll-columns) columns)
+    (doc-scroll-goto-page current-page)))
 
 (defsubst doc-scroll-overlay-selected-window-filter (overlays)
   (cl-remove-if-not
@@ -225,6 +284,12 @@ TEXT is the text that is used as a placeholder for the overlay."
 		 (1+ (overlay-get overlay 'i))))
 	 (size (overlay-get overlay 'size))
 	 data)
+    (when (= (doc-scroll-columns) 1)
+      (overlay-put overlay 'before-string
+                   (when (> (window-pixel-width) (car size))
+                     (propertize " " 'display
+                                 `(space :align-to
+                                         (,(floor (/ (- (window-pixel-width) (car size)) 2))))))))
 
     (unless async
       (setq data (funcall doc-scroll-image-data-function page (car size))))
@@ -252,7 +317,7 @@ TEXT is the text that is used as a placeholder for the overlay."
     ;; 		    (deferred:nextc it display))
     ;;   (funcall display data))))
 
-(defun doc-scroll-display-image (overlay data &optional svg base64)
+(defun doc-scroll-display-image (overlay data &optional svg base64 file)
   (when svg
     (setq data (let* ((size (overlay-get overlay 'size))
 		      (svg (svg-create (car size) (cdr size))))
@@ -264,8 +329,10 @@ TEXT is the text that is used as a placeholder for the overlay."
 
   (let* ((fn (if svg
 		 (apply-partially #'svg-image data)
-	       (apply-partially #'create-image data 'png t)))
-	 (image (funcall fn :page (1+ (overlay-get overlay 'i)))))
+	       (apply-partially #'create-image data 'tiff (not file))))
+	 (image (apply fn :page (1+ (overlay-get overlay 'i))
+		       (unless doc-pymupdf-mode
+			 (list :scale (min (/ 2.0 (doc-scroll-columns)) 1))))))
 
     (overlay-put overlay 'display image))
   (overlay-put overlay 'data data))
@@ -341,11 +408,16 @@ TEXT is the text that is used as a placeholder for the overlay."
 
   ;; (setq-local doc-scroll-internal-page-sizes (doc-djvu-page-sizes)
   ;;             doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes))
-  (pcase (file-name-extension buffer-file-name)
-    ("pdf" (doc-pymupdf-mode))
-    ;; ("pdf" (doc-mupdf-mode))
+  (setq doc-scroll-doc-type (pcase (file-name-extension buffer-file-name)
+			      ("pdf" 'pdf)
+			      ("djvu" 'djvu)
+			      ("epub" 'epub)))
+
+  (pcase doc-scroll-doc-type
+    ((or 'pdf 'epub) (doc-pymupdf-mode))
+    ;; ((or 'pdf 'epub) (doc-mupdf-mode))
     ;; ("pdf" (doc-poppler-mode))
-    ("djvu" (doc-djvu-mode)))
+    ('djvu (doc-djvu-mode)))
 
   (add-hook 'window-configuration-change-hook 'doc-scroll-redisplay nil t)
   (add-hook 'image-mode-new-window-functions 'doc-scroll-new-window-function nil t)
@@ -372,7 +444,7 @@ TEXT is the text that is used as a placeholder for the overlay."
 
 ;; (setq magic-mode-alist (remove '("%PDF" . pdf-view-mode) magic-mode-alist))
 ;;;###autoload
-(dolist (ext '("\\.pdf\\'" "\\.djvu\\'"))
+(dolist (ext '("\\.pdf\\'" "\\.djvu\\'" "\\.epub\\'"))
   (add-to-list 'auto-mode-alist (cons ext 'doc-scroll-mode)))
 
 (defun doc-scroll-vscroll-to-pscroll (&optional vscroll)
@@ -395,6 +467,8 @@ TEXT is the text that is used as a placeholder for the overlay."
   ;; (unless (and (>= page 1)
   ;; (<= page doc-scroll-last-page))
   ;; (error "No such page: %d" page))
+
+  ;; When in thumb window, first select correct window
   (unless window
     (setq window
           ;; (if (pdf-util-pdf-window-p)
@@ -413,7 +487,9 @@ TEXT is the text that is used as a placeholder for the overlay."
       (when (window-live-p window)
 	(let ((page-overlay (doc-scroll-page-overlay page)))
           (doc-scroll-display-page page-overlay doc-scroll-async doc-scroll-svg-embed)
-          (doc-scroll-display-page (doc-scroll-page-overlay (1+ page)) doc-scroll-async doc-scroll-svg-embed) ; TODO remove
+          (doc-scroll-display-page (doc-scroll-page-overlay (1+ page))
+				   doc-scroll-async
+				   doc-scroll-svg-embed) ; TODO remove
           (goto-char (overlay-start page-overlay))))
       ;; (when changing-p
       ;;   (run-hooks 'doc-scroll-after-change-page-hook))
@@ -661,15 +737,15 @@ The number of COLUMNS can be set with a numeric prefix argument."
                              "thumbs/"))
          (last-page doc-scroll-number-of-pages)
          (win (selected-window))
-         (mode major-mode))
+         (type doc-scroll-doc-type))
     (or (and buf
              (buffer-local-value 'doc-scroll-thumbs-columns buf)
              (= (buffer-local-value 'doc-scroll-thumbs-columns buf) columns))
 
         (with-current-buffer (get-buffer-create buffer-name)
           (unless (file-exists-p output-dir)
-            (funcall (pcase mode
-                       ('doc-backend-djvu-mode #'doc-djvu-decode-thumbs)
+            (funcall (pcase type
+		       ('djvu #'doc-djvu-decode-thumbs)
                        (_ #'doc-mupdf-create-thumbs))
                      file))
           (doc-scroll-thumbs-mode)
@@ -686,11 +762,11 @@ The number of COLUMNS can be set with a numeric prefix argument."
                        (svg (copy-sequence source-svg))
                        (im (create-image (concat output-dir
                                                  (format "thumb%d." p)
-                                                 (pcase mode
-                                                   ('doc-backend-djvu-mode "tif")
-                                                   (_ "png")))
-                                         (pcase mode
-                                           ('doc-backend-djvu-mode 'tiff)
+						 (pcase type
+						   ('djvu "tif")
+						   (_ "png")))
+                                         (pcase type
+					   ('djvu 'tiff)
                                            (_ 'png))
                                          nil
                                          :margin '(2 . 1))))
