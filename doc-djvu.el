@@ -15,7 +15,7 @@
               doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes)
 
               doc-scroll-image-data-function #'doc-djvu-page-data
-	      doc-scroll-async nil
+	      doc-scroll-async t
 	      doc-scroll-svg-embed nil))
               ;; doc-scroll-contents (doc-djvu-parse-raw-contents)
               ;; ;; doc-scroll-contents-function #'doc-djvu-parse-raw-contents
@@ -260,19 +260,21 @@ prefixed with the universal argument, undoes the inversion."
 (defun doc-djvu-decode-thumbs (&optional file force)
   "Asynchronously create thumb files for all pages."
   (setq file (or file (buffer-file-name)))
-  (let ((outdir (concat "/tmp/doc-tools/" (file-name-as-directory (file-name-base file)) "thumbs/")))
+  (let ((outdir (concat "/tmp/doc-tools/"
+			(file-name-as-directory (file-name-base file))
+			"thumbs/")))
     (when (or (not (file-exists-p outdir)) force)
-    (unless (file-exists-p outdir)
-      (make-directory outdir))
-    (let ((proc (start-process "ddjvu" "djvu decode thumbs" "ddjvu"
-                               "-format=tiff"
-                               "-eachpage"
-                               (format "-size=%sx%s" 175 2000)
-                               "-quality=50"
-                               file
-                               (concat outdir "thumb%d.tif"))))
-      (set-process-sentinel proc (lambda (process event)
-                                   (message "Create thumbs process %s" event)))))))
+      (unless (file-exists-p outdir)
+	(make-directory outdir))
+      (let ((proc (start-process "ddjvu" "djvu decode thumbs" "ddjvu"
+				 "-format=tiff"
+				 "-eachpage"
+				 (format "-size=%sx%s" 175 2000)
+				 "-quality=50"
+				 file
+				 (concat outdir "thumb%d.tif"))))
+	(set-process-sentinel proc (lambda (process event)
+                                     (message "Create thumbs process %s" event)))))))
 
 
 
@@ -297,6 +299,34 @@ prefixed with the universal argument, undoes the inversion."
       (setq coding-system-for-read 'binary)
       (insert-file-contents-literally "/tmp/doc-djvu-temp-img")
       (buffer-substring-no-properties (point-min) (point-max)))))
+
+(defun doc-djvu-decode-page-async (page width &optional window)
+  (let* ((range (number-sequence (max (1- page) 1)
+				 (min (1+ page) doc-scroll-number-of-pages)))
+	 (outdir (doc-djvu-decode-directory buffer-file-name))
+	 new-pages)
+    (unless (file-exists-p outdir)
+      (make-directory outdir t))
+    (dolist (p range)
+      (unless (file-exists-p (format "%spage-%d.tiff" outdir p))
+	(push p new-pages)))
+    (setq new-pages (if (member page new-pages)
+			(cons page (remove page (reverse new-pages)))))
+    (let ((proc (start-process "ddjvu" "ddjvu" "ddjvu"
+			       "-format=tiff"
+			       (ldbg (format "-page=%s" (mapconcat #'number-to-string new-pages ",")))
+			       "-eachpage"
+			       (format "-size=%dx%d" (ldbg width) 5000)
+			       "-quality=50"
+			       buffer-file-name
+			       (ldbg (concat outdir "page-%d.tiff")))))
+      (set-process-sentinel proc (lambda (_ _)
+				   (dolist (p range)
+				     (with-selected-window (or window (selected-window)) 
+				       (doc-scroll-display-image (doc-scroll-page-overlay p)
+								 (format "%spage-%d.tiff" outdir p)
+								 nil nil t))))))))
+
 
 ;; (defun doc-djvu-decode-page (page width &optional file)
 ;;   (setq file (or file (buffer-file-name)))

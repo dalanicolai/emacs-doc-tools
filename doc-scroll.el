@@ -225,7 +225,7 @@ TEXT is the text that is used as a placeholder for the overlay."
     (if async
 	(if doc-pymupdf-mode
 	    (doc-pymupdf-epc-display-image-async page (car size) (selected-window))
-	  (doc-djvu-page-data page (car size) t))
+	  (doc-djvu-decode-page-async page (car size) (selected-window)))
       (doc-scroll-display-image overlay data svg doc-pymupdf-mode))))
     ;; 	 (data (funcall (if async #'epc:call-deferred #'epc:call-sync)
     ;; 			doc-pymupdf-epc-server
