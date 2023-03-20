@@ -192,8 +192,15 @@ TEXT is the text that is used as a placeholder for the overlay."
          (ratio (/ (float base-width) widest-page-w)))
     (floor (* ratio (apply #'max (mapcar #'cdr doc-scroll-internal-page-sizes))))))
 
+(defsubst doc-scroll-overlay-selected-window-filter (overlays)
+  (cl-remove-if-not
+   (lambda (overlay)
+     (eq (overlay-get overlay 'window) (selected-window)))
+   overlays))
+
 (defun doc-scroll-visible-overlays (&optional extra-row)
-  (let* ((visible (overlays-in (window-start) (window-end nil t)))
+  (let* ((visible (doc-scroll-overlay-selected-window-filter
+		   (overlays-in (window-start) (window-end nil t))))
          (start (ldbg "s" (apply #'min (mapcar (lambda (o) (overlay-get o 'i)) visible))))
          (end (ldbg "e" (apply #'max (mapcar (lambda (o) (overlay-get o 'i)) visible))))
          ;; include previous/next rows for 'smoother' displaying
