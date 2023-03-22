@@ -1,7 +1,7 @@
 ;; -*- lexical-binding: t; -*-
 
-;; (eval-when-compile
-;;   (require 'doc-scroll))
+(eval-and-compile
+  (require 'doc-scroll))
 
 (defvar doc-doc nil
   "Doc file associated with buffer.")
@@ -15,6 +15,7 @@
               doc-scroll-number-of-pages (length doc-scroll-internal-page-sizes)
 
               doc-scroll-image-data-function #'doc-djvu-page-data
+	      doc-scroll-create-image-files-async-fun #'doc-djvu-create-image-files-async
 	      doc-scroll-async t
 	      doc-scroll-svg-embed nil))
               ;; doc-scroll-contents (doc-djvu-parse-raw-contents)
@@ -199,7 +200,7 @@
 ;;              (if format (symbol-name format) "tif")
 ;;              "'"))))
 
-(defun doc-djvu-decode-directory (&optional file thumbs)
+(defun doc-scroll-cache-directory (&optional file thumbs)
   (interactive "f\nP")
   (concat "/tmp/doc-tools/"
           (file-name-as-directory (file-name-base file))
@@ -210,7 +211,7 @@
 Uses the tiffset command to invert the color of the pages. When
 prefixed with the universal argument, undoes the inversion."
   (interactive "P")
-  (dolist (f (directory-files (doc-djvu-decode-directory buffer-file-name)
+  (dolist (f (directory-files (doc-scroll-cache-directory buffer-file-name)
                               t "tiff$"))
     (doc-djvu-invert-tiff f arg)))
 
@@ -243,7 +244,7 @@ prefixed with the universal argument, undoes the inversion."
 (defun doc-djvu-decode-pages (width &optional file force)
   "Asynchronously create files for all pages."
   (setq file (or file (buffer-file-name)))
-  (let ((outdir (doc-djvu-decode-directory file)))
+  (let ((outdir (doc-scroll-cache-directory file)))
     (when (or (not (file-exists-p outdir)) force)
       (unless (file-exists-p outdir)
 	(make-directory outdir t))
@@ -260,9 +261,7 @@ prefixed with the universal argument, undoes the inversion."
 (defun doc-djvu-decode-thumbs (&optional file force)
   "Asynchronously create thumb files for all pages."
   (setq file (or file (buffer-file-name)))
-  (let ((outdir (concat "/tmp/doc-tools/"
-			(file-name-as-directory (file-name-base file))
-			"thumbs/")))
+  (let ((outdir (doc-scroll-cache-directory file t)))
     (when (or (not (file-exists-p outdir)) force)
       (unless (file-exists-p outdir)
 	(make-directory outdir))
@@ -300,33 +299,15 @@ prefixed with the universal argument, undoes the inversion."
       (insert-file-contents-literally "/tmp/doc-djvu-temp-img")
       (buffer-substring-no-properties (point-min) (point-max)))))
 
-(defun doc-djvu-decode-page-async (page width &optional window)
-  (let* ((range (number-sequence (max (1- page) 1)
-				 (min (1+ page) doc-scroll-number-of-pages)))
-	 (outdir (doc-djvu-decode-directory buffer-file-name))
-	 new-pages)
-    (unless (file-exists-p outdir)
-      (make-directory outdir t))
-    (dolist (p range)
-      (unless (file-exists-p (format "%spage-%d.tiff" outdir p))
-	(push p new-pages)))
-    (setq new-pages (if (member page new-pages)
-			(cons page (remove page (reverse new-pages)))))
-    (let ((proc (start-process "ddjvu" "ddjvu" "ddjvu"
-			       "-format=tiff"
-			       (ldbg (format "-page=%s" (mapconcat #'number-to-string new-pages ",")))
-			       "-eachpage"
-			       (format "-size=%dx%d" (ldbg width) 5000)
-			       "-quality=50"
-			       buffer-file-name
-			       (ldbg (concat outdir "page-%d.tiff")))))
-      (set-process-sentinel proc (lambda (_ _)
-				   (dolist (p range)
-				     (with-selected-window (or window (selected-window)) 
-				       (doc-scroll-display-image (doc-scroll-page-overlay p)
-								 (format "%spage-%d.tiff" outdir p)
-								 nil nil t))))))))
-
+(defun doc-djvu-create-image-files-async (outdir &optional width &rest pages)
+  (start-process "ddjvu" "ddjvu" "ddjvu"
+		 "-format=tiff"
+		 (ldbg (format "-page=%s" (mapconcat #'number-to-string pages ",")))
+		 "-eachpage"
+		 (format "-size=%dx%d" (or width doc-scroll-cache-file-image-width) 5000)
+		 "-quality=50"
+		 buffer-file-name
+		 (concat outdir "page-%d.tiff")))
 
 ;; (defun doc-djvu-decode-page (page width &optional file)
 ;;   (setq file (or file (buffer-file-name)))

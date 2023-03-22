@@ -42,7 +42,7 @@
 
 (defcustom doc-scroll-cache-file-image-width (save-window-excursion
 					       (delete-other-windows)
-					       (split-window-horizontally)
+					       (split-window-right)
 					       (window-body-width nil t))
   "The width of the cached images."
   :type 'numberp
@@ -175,13 +175,14 @@ TEXT is the text that is used as a placeholder for the overlay."
                            oc))
                        (image-mode-window-get 'overlays))))
       (image-mode-window-put 'overlays overlays winprops)
-      (when (image-mode-window-get 'win-width)
-        (doc-scroll-redisplay 'force))
-
-      (goto-char (point-min)))))
+      ;; (when (image-mode-window-get 'win-width)
+      ;;   (doc-scroll-redisplay 'force))
+      ;; (doc-scroll-redisplay)
+      ;; (goto-char (point-min))
+      )))
 
 (defun doc-scroll-redisplay (&optional force)
-  ;; (ldbg "WINDOW CONFIGURATION CHANGE (redisplay)")
+  (ldbg "WINDOW CONFIGURATION CHANGE (redisplay)")
   ;; (when (or force
   ;;           (/= (or (image-mode-window-get 'win-width) -1)
   ;;               (window-pixel-width)))
@@ -275,21 +276,18 @@ columns"
 
 (defun doc-scroll-undisplay-page (overlay)
   (let ((size (overlay-get overlay 'size)))
-    (overlay-put overlay 'display `(space . (:width (,(car size)) :height (,(cdr size)))))))
+    (overlay-put overlay 'display `(space . (:width (,(car size)) :height (,(cdr size)))))
+    (setq doc-scroll-async-record (remove (1+ (overlay-get overlay 'i)) doc-scroll-async-record))))
 
 (defun doc-scroll-display-page (overlay &optional async svg)
+  (ldbg "DISPLAY" nil)
   (let* ((page (if (numberp overlay)
 		   (prog1 overlay
 		     (setq overlay (doc-scroll-page-overlay overlay)))
 		 (1+ (overlay-get overlay 'i))))
 	 (size (overlay-get overlay 'size))
 	 data)
-    (when (= (doc-scroll-columns) 1)
-      (overlay-put overlay 'before-string
-                   (when (> (window-pixel-width) (car size))
-                     (propertize " " 'display
-                                 `(space :align-to
-                                         (,(floor (/ (- (window-pixel-width) (car size)) 2))))))))
+    
 
     (unless async
       (setq data (funcall doc-scroll-image-data-function page (car size))))
@@ -297,7 +295,7 @@ columns"
     (if async
 	(if doc-pymupdf-mode
 	    (doc-pymupdf-epc-display-image-async page (car size) (selected-window))
-	  (doc-djvu-decode-page-async page (car size) (selected-window)))
+	  (doc-scroll-create-image-files-async page nil (selected-window)))
       (doc-scroll-display-image overlay data svg doc-pymupdf-mode))))
     ;; 	 (data (funcall (if async #'epc:call-deferred #'epc:call-sync)
     ;; 			doc-pymupdf-epc-server
@@ -317,25 +315,106 @@ columns"
     ;; 		    (deferred:nextc it display))
     ;;   (funcall display data))))
 
+(defun doc-scroll-cache-directory (&optional file thumbs)
+  (interactive "f\nP")
+  (concat "/tmp/doc-tools/"
+          (file-name-as-directory (file-name-base file))
+	  (if thumbs
+	      "thumbs/"
+            "pages/")))
+
+(defun doc-scroll-page-row (page columns)
+  (/ (1- page) columns))
+
+(defun doc-scroll-row-first-page (columns page)
+  (1+ (* (doc-scroll-page-row page columns) columns)))
+
+(defvar-local doc-scroll-async-record nil)
+
+;; TODO create backward scroll functions (argument already implemented here)
+
+;; Another, simpler and only little less efficient, way to implement
+;; this function is to make a version that takes a 'type' argument,
+;; which is either nil, forward, or backward.  Then it could simply
+;; create all three rows when 'type' is nil.
+(defun doc-scroll-create-image-files-async (page &optional columns window backward)
+  (setq columns (or columns (doc-scroll-columns)))
+  (let ((outdir (doc-scroll-cache-directory buffer-file-name))
+	(ext (pcase doc-scroll-doc-type
+	       ('pdf "png")
+	       ('djvu "tiff")))
+	ranges)
+    (unless (file-exists-p outdir)
+      (make-directory outdir t))
+    ;; determine first pages in row
+    (dolist (start (mapcar (apply-partially #'doc-scroll-row-first-page columns)
+		    (list page (funcall (if backward #'- #'+)
+					page columns))))
+      (let (range)
+	(dotimes (i columns)
+	  (let ((p (+ start i)))
+	    ;; if page file exists then display it
+	    (cond ((file-exists-p (format "%spage-%d.%s" outdir p ext))
+		   (doc-scroll-display-image (doc-scroll-page-overlay p)
+					     (format "%spage-%d.%s" outdir p ext)
+					     nil nil t))
+		  ;; otherwise push to 'queue'
+		  (t (unless (member p doc-scroll-async-record)
+		      (push p range))))))
+	(when range
+	  (push (nreverse range) ranges))))
+    (dolist (row (ldbg "ROWS" (nreverse ranges)))
+      ;; keep records of running proceeses to prevent creating
+      ;; multiple processes for single page
+      (setq doc-scroll-async-record (append doc-scroll-async-record row))
+      (let ((proc (apply doc-scroll-create-image-files-async-fun
+			 outdir nil row)))
+	(set-process-sentinel proc (lambda (_ _)
+				     (dolist (p row)
+				       (with-selected-window (or window (selected-window)) 
+					 (doc-scroll-display-image (doc-scroll-page-overlay p)
+								   (format "%spage-%d.%s" outdir p ext)
+								   nil nil t))
+				       (setq doc-scroll-async-record (remove p doc-scroll-async-record)))))
+	(ldbg "row" row)
+	(ldbg (process-list))
+	(redisplay)))))
+
 (defun doc-scroll-display-image (overlay data &optional svg base64 file)
-  (when svg
-    (setq data (let* ((size (overlay-get overlay 'size))
-		      (svg (svg-create (car size) (cdr size))))
-		 (if base64
-		     (doc-svg-embed-base64 svg data "image/png")
-		 (svg-embed svg data "image/png" t))
-		 ;; (svg-rectangle svg 0 0 200 200 :fill "red")
-		 svg)))
+  (unless (ldbg "im" (imagep (overlay-get overlay 'display)))
+    (ldbg "OVERLAY" (overlay-get overlay 'i))
+    (let ((size (overlay-get overlay 'size)))
+      (when svg
+	(setq data (let* ((svg (svg-create (car size) (cdr size))))
+		     (if base64
+			 (doc-svg-embed-base64 svg data "image/png")
+		       (svg-embed svg data "image/png" t))
+		     ;; (svg-rectangle svg 0 0 200 200 :fill "red")
+		     svg)))
 
-  (let* ((fn (if svg
-		 (apply-partially #'svg-image data)
-	       (apply-partially #'create-image data 'tiff (not file))))
-	 (image (apply fn :page (1+ (overlay-get overlay 'i))
-		       (unless doc-pymupdf-mode
-			 (list :scale (min (/ 2.0 (doc-scroll-columns)) 1))))))
+      (let* ((fn (if svg
+		     (apply-partially #'svg-image data)
+		   (apply-partially #'create-image
+				    data
+				    (pcase doc-scroll-doc-type
+				      ('pdf 'png)
+				      ('djvu 'tiff))
+				    (not file))))
+	     (image (apply fn :page (1+ (overlay-get overlay 'i))
+			   (unless doc-pymupdf-mode
+			     (list :scale (min (/ 2.0 (doc-scroll-columns)) 1))))))
 
-    (overlay-put overlay 'display image))
-  (overlay-put overlay 'data data))
+	;; NOTE this was in the `display-page' function but then, for
+	;; some reason, did not work correctly with `goto' function`
+	;; (when (= (doc-scroll-columns) 1)
+	;;   (overlay-put overlay 'before-string
+        ;;                (when (> (window-pixel-width) (car size))
+	;; 		 (propertize " " 'display
+        ;;                              `(space :align-to
+        ;;                                      (,(floor (/ (- (window-pixel-width) (car size)) 2))))))))
+
+	(overlay-put overlay 'display image))
+      (overlay-put overlay 'data data))))
 
 (setq doc-scroll-mode-map
       (let ((map (make-sparse-keymap)))
@@ -414,8 +493,8 @@ columns"
 			      ("epub" 'epub)))
 
   (pcase doc-scroll-doc-type
-    ((or 'pdf 'epub) (doc-pymupdf-mode))
-    ;; ((or 'pdf 'epub) (doc-mupdf-mode))
+    ;; ((or 'pdf 'epub) (doc-pymupdf-mode))
+    ((or 'pdf 'epub) (doc-mupdf-mode))
     ;; ("pdf" (doc-poppler-mode))
     ('djvu (doc-djvu-mode)))
 
@@ -486,10 +565,7 @@ columns"
       ;;   (run-hooks 'doc-scroll-change-page-hook))
       (when (window-live-p window)
 	(let ((page-overlay (doc-scroll-page-overlay page)))
-          (doc-scroll-display-page page-overlay doc-scroll-async doc-scroll-svg-embed)
-          (doc-scroll-display-page (doc-scroll-page-overlay (1+ page))
-				   doc-scroll-async
-				   doc-scroll-svg-embed) ; TODO remove
+          (doc-scroll-display-page page-overlay t nil)
           (goto-char (overlay-start page-overlay))))
       ;; (when changing-p
       ;;   (run-hooks 'doc-scroll-after-change-page-hook))
@@ -497,7 +573,7 @@ columns"
       ;;   (pdf-view-deactivate-region)
       ;;   (force-mode-line-update)
       ;;   (run-hooks 'pdf-view-after-change-page-hook))))
-      nil)))
+      )))
 
 (defun doc-scroll-vscroll-to-pscroll (vscroll)
   "Scroll in units of page size."
@@ -534,7 +610,7 @@ If N is nil, the value of `doc-scroll-step-size` is used."
 	  (redisplay) ; so we add an extra redisplay
 	  (if row
 	      (doc-scroll-set-window-pscroll (doc-scroll-pscroll-to-vscroll (or (image-mode-window-get 'pscroll) 0)))
-	    (doc-scroll-set-window-pscroll (floor (- new-vscroll (ldbg  current-overlay-height)))))
+	    (doc-scroll-set-window-pscroll (floor (- new-vscroll current-overlay-height))))
 	  ;; (redisplay)
 	  (let ((new-overlays (ldbg "v" (doc-scroll-visible-overlays 'after))))
 	    (dolist (o (seq-difference old-overlays new-overlays))
@@ -551,7 +627,7 @@ If N is nil, the value of `doc-scroll-step-size` is used."
   (let* ((old-vscroll (window-vscroll nil t))
 	 (new-vscroll (- old-vscroll (or n doc-scroll-step-size))))
 
-    (if (or row (< (ldbg  new-vscroll) 0))
+    (if (or row (< new-vscroll 0))
 	(let ((old-overlays (doc-scroll-visible-overlays)))
 	  (if (= (doc-scroll-current-page) 1)
               (message "Beginning of buffer")

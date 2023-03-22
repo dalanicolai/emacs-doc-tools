@@ -1,15 +1,19 @@
 ;; -*- lexical-binding: t; -*-
 
+(eval-and-compile
+  (require 'doc-scroll))
+
 ;;;###autoload
 (define-minor-mode doc-mupdf-mode
   "MuPDF backend for Doc-Scroll."
   :lighter " MuPDF"
   ;; (doc-mupdf-create-pages doc-scroll-overlay-width)
 
-  (setq-local doc-scroll-number-of-pages (doc-mupdf-number-of-pages)
-              doc-scroll-internal-page-sizes (doc-mupdf-page-sizes)
-	      doc-scroll-image-data-function #'doc-mupdf-get-image-data
-	      doc-scroll-async nil))
+  (setq-local doc-scroll-number-of-pages              (doc-mupdf-number-of-pages)
+              doc-scroll-internal-page-sizes          (doc-mupdf-page-sizes)
+	      doc-scroll-image-data-function          #'doc-mupdf-get-image-data
+	      doc-scroll-create-image-files-async-fun #'doc-mupdf-create-image-files-async
+	      doc-scroll-async t))
               ;; doc-scroll-internal-page-sizes (doc-mupdf-page-sizes)
               ;; doc-scroll-last-page (length doc-scroll-internal-page-sizes)
               ;; doc-scroll-structured-contents (doc-poppler-structured-contents nil nil t)
@@ -106,19 +110,28 @@
     (insert-file-contents-literally "/tmp/pdf-temp-img")
     (buffer-substring-no-properties (point-min) (point-max))))
 
-(defun doc-mupdf-create-pages (width &optional file force)
-  (setq file (or file buffer-file-name))
-  (let ((outdir (concat "/tmp/doc-tools/" (file-name-as-directory (file-name-base file)) "pages/")))
-    (when (or (not (file-exists-p outdir)) force)
-      (unless (file-exists-p outdir)
-        (make-directory outdir t))
-      (let ((proc (start-process "mutool" "mutool create page files" "mutool"
-                                 "draw"
-                                 "-o" (concat outdir "page-%d.png")
-                                 "-w" (number-to-string width)
-                                 file)))
-        (set-process-sentinel proc (lambda (process event)
-                                     (message "Create pages process %s" event)))))))
+(defun doc-mupdf-create-image-files-async (outdir &optional width &rest pages)
+  (start-process "mutool" "mutool" "mutool"
+		 "draw"
+		 "-o" (concat outdir "page-%d.png")
+                 "-w" (number-to-string (or width doc-scroll-cache-file-image-width))
+		 ;; "-I"
+		 buffer-file-name
+		 (mapconcat #'number-to-string pages ",")))
+
+;; (defun doc-mupdf-create-pages (width &optional file force)
+;;   (setq file (or file buffer-file-name))
+;;   (let ((outdir (concat "/tmp/doc-tools/" (file-name-as-directory (file-name-base file)) "pages/")))
+;;     (when (or (not (file-exists-p outdir)) force)
+;;       (unless (file-exists-p outdir)
+;;         (make-directory outdir t))
+;;       (let ((proc (start-process "mutool" "mutool create page files" "mutool"
+;;                                  "draw"
+;;                                  "-o" (concat outdir "page-%d.png")
+;;                                  "-w" (number-to-string width)
+;;                                  file)))
+;;         (set-process-sentinel proc (lambda (process event)
+;;                                      (message "Create pages process %s" event)))))))
 
 (defun doc-mupdf-create-thumbs (&optional file force)
   (setq file (or file buffer-file-name))
