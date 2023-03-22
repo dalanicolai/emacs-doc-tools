@@ -204,7 +204,10 @@
   (interactive "f\nP")
   (concat "/tmp/doc-tools/"
           (file-name-as-directory (file-name-base file))
-          "pages/"))
+          (file-name-as-directory
+	   (if thumbs
+	       "thumbs"
+	     "pages"))))
 
 (defun doc-backend-djvu-invert (&optional arg)
   "Invert color of pages.
@@ -302,7 +305,7 @@ prefixed with the universal argument, undoes the inversion."
 (defun doc-djvu-create-image-files-async (outdir &optional width &rest pages)
   (start-process "ddjvu" "ddjvu" "ddjvu"
 		 "-format=tiff"
-		 (ldbg (format "-page=%s" (mapconcat #'number-to-string pages ",")))
+		 (format "-page=%s" (mapconcat #'number-to-string pages ","))
 		 "-eachpage"
 		 (format "-size=%dx%d" (or width doc-scroll-cache-file-image-width) 5000)
 		 "-quality=50"
