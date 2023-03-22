@@ -189,15 +189,16 @@ TEXT is the text that is used as a placeholder for the overlay."
     ;; (image-mode-window-put 'win-width (window-pixel-width))
     (let* ((w (doc-scroll-overlay-base-width (image-mode-window-get 'columns) 0))
            (h (doc-scroll-overlay-base-height w))
+	   (win-width (window-body-width nil t))
            (overlays (image-mode-window-get 'overlays)))
       (dolist (o overlays)
         (overlay-put o 'display `(space . (:width (,w) :height (,h))))
         (when (= (doc-scroll-columns) 1)
           (overlay-put o 'before-string
-                       (when (> (window-body-width) w)
+                       (when (> win-width  w)
                          (propertize " " 'display
                                      `(space :align-to
-                                             (,(floor (/ (- (window-body-width) (car overlay-size)) 2))))))))
+                                             (,(floor (/ (- win-width w) 2))))))))
         (overlay-put o 'size (cons w h)))
       ;; NOTE this seems not required when a non-nil UPDATE argument is passes
       ;; to the `window-end' function (however, the outcommenting might lead
